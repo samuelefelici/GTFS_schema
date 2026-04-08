@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useMemo, useRef, useState } from "react";
 
 const TABLES = {
   agency: {
@@ -686,315 +686,328 @@ function RelationshipGraph({
 }
 
 export default function GTFSSchema() {
+  const CARD_WIDTH = 320;
+  const CARD_HEADER = 38;
+  const FIELD_ROW = 22;
+
+  const getCardHeight = (tableKey) => CARD_HEADER + TABLES[tableKey].fields.length * FIELD_ROW + 10;
+
+  const buildInitialPositions = () => {
+    const positions = {};
+    const colGap = 90;
+    const startX = 50;
+    const startY = 50;
+
+    GROUPS.forEach((group, groupIndex) => {
+      let y = startY;
+      const x = startX + groupIndex * (CARD_WIDTH + colGap);
+      group.tables.forEach((tableKey) => {
+        if (!TABLES[tableKey]) return;
+        positions[tableKey] = { x, y };
+        y += getCardHeight(tableKey) + 26;
+      });
+    });
+
+    const leftovers = Object.keys(TABLES).filter((key) => !positions[key]);
+    let y = startY;
+    const x = startX + GROUPS.length * (CARD_WIDTH + colGap);
+    leftovers.forEach((tableKey) => {
+      positions[tableKey] = { x, y };
+      y += getCardHeight(tableKey) + 26;
+    });
+
+    return positions;
+  };
+
   const [selected, setSelected] = useState("agency");
-  const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [darkMode, setDarkMode] = useState(true);
-  const [showOnlyConnected, setShowOnlyConnected] = useState(false);
-  const [graphZoom, setGraphZoom] = useState(1);
+  const [zoom, setZoom] = useState(0.95);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [positions, setPositions] = useState(buildInitialPositions);
 
-  const filteredTables = useMemo(() => {
-    let entries = Object.entries(TABLES);
-    if (filter !== "all") {
-      const group = GROUPS.find(g => g.id === filter);
-      if (group) entries = entries.filter(([k]) => group.tables.includes(k));
-    }
-    if (search) {
-      const s = search.toLowerCase();
-      entries = entries.filter(([k, t]) =>
-        t.label.toLowerCase().includes(s) ||
-        t.fields.some(f => f.name.toLowerCase().includes(s) || f.desc.toLowerCase().includes(s))
-      );
-    }
-    return entries;
-  }, [filter, search]);
+  const interactionRef = useRef(null);
 
   const selectedTable = TABLES[selected];
   const selectedGroup = getGroupForTable(selected);
 
   const allRelations = useMemo(() => {
-    const map = new Map();
+    const rels = [];
     Object.entries(TABLES).forEach(([fromTable, table]) => {
       table.fields.forEach((field) => {
         if (!field.fk) return;
         const toTable = field.fk.split(".")[0];
         if (!TABLES[toTable]) return;
-        const relKey = `${fromTable}->${toTable}`;
-        if (!map.has(relKey)) {
-          map.set(relKey, {
-            from: fromTable,
-            to: toTable,
-            fields: [field.name],
-          });
-        } else {
-          map.get(relKey).fields.push(field.name);
-        }
-      });
-    });
-    return Array.from(map.values());
-  }, []);
-
-  const fkRelations = useMemo(() => {
-    if (!selectedTable) return [];
-    return selectedTable.fields.filter(f => f.fk).map(f => {
-      const targetTable = f.fk.split(".")[0];
-      return { from: selected, to: targetTable, field: f.name, target: f.fk };
-    });
-  }, [selected, selectedTable]);
-
-  const incomingRelations = useMemo(() => {
-    const rels = [];
-    Object.entries(TABLES).forEach(([k, t]) => {
-      t.fields.forEach(f => {
-        if (f.fk) {
-          const target = f.fk.split(".")[0];
-          if (target === selected && k !== selected) {
-            rels.push({ from: k, field: f.name, target: f.fk });
-          }
-        }
+        rels.push({ from: fromTable, to: toTable, field: field.name, target: field.fk });
       });
     });
     return rels;
-  }, [selected]);
+  }, []);
+
+  const matchesSearch = useMemo(() => {
+    if (!search) return new Set(Object.keys(TABLES));
+    const s = search.toLowerCase();
+    const set = new Set();
+    Object.entries(TABLES).forEach(([key, table]) => {
+      const hit =
+        table.label.toLowerCase().includes(s) ||
+        key.toLowerCase().includes(s) ||
+        table.fields.some((f) => f.name.toLowerCase().includes(s) || f.desc.toLowerCase().includes(s));
+      if (hit) set.add(key);
+    });
+    return set;
+  }, [search]);
+
+  const handlePointerDownCanvas = (e) => {
+    if (e.target !== e.currentTarget) return;
+    interactionRef.current = {
+      type: "pan",
+      lastX: e.clientX,
+      lastY: e.clientY,
+    };
+  };
+
+  const handlePointerDownCard = (e, tableKey) => {
+    e.stopPropagation();
+    setSelected(tableKey);
+    interactionRef.current = {
+      type: "drag",
+      tableKey,
+      lastX: e.clientX,
+      lastY: e.clientY,
+    };
+  };
+
+  const handlePointerMove = (e) => {
+    if (!interactionRef.current) return;
+    const dx = e.clientX - interactionRef.current.lastX;
+    const dy = e.clientY - interactionRef.current.lastY;
+    interactionRef.current.lastX = e.clientX;
+    interactionRef.current.lastY = e.clientY;
+
+    if (interactionRef.current.type === "pan") {
+      setPan((prev) => ({ x: prev.x + dx, y: prev.y + dy }));
+      return;
+    }
+
+    if (interactionRef.current.type === "drag") {
+      const key = interactionRef.current.tableKey;
+      setPositions((prev) => ({
+        ...prev,
+        [key]: {
+          x: prev[key].x + dx / zoom,
+          y: prev[key].y + dy / zoom,
+        },
+      }));
+    }
+  };
+
+  const endInteraction = () => {
+    interactionRef.current = null;
+  };
 
   const vars = darkMode ? {
-    "--bg": "#0f1117", "--card-bg": "#181b24", "--card-selected": "#1e2230",
-    "--text": "#e2e8f0", "--text-muted": "#94a3b8", "--border": "#2d3348",
-    "--border-light": "#252b3b", "--panel-bg": "#14161e", "--input-bg": "#1a1d27",
+    "--bg": "#0d1117", "--card-bg": "#161b22", "--card-selected": "#1f2937",
+    "--text": "#e5e7eb", "--text-muted": "#9ca3af", "--border": "#2d3748",
+    "--border-light": "#263041", "--panel-bg": "#11161d", "--input-bg": "#1b2430",
   } : {
-    "--bg": "#f8f9fc", "--card-bg": "#ffffff", "--card-selected": "#f0f4ff",
-    "--text": "#1e293b", "--text-muted": "#64748b", "--border": "#e2e8f0",
-    "--border-light": "#f1f5f9", "--panel-bg": "#ffffff", "--input-bg": "#f1f5f9",
+    "--bg": "#f4f6fb", "--card-bg": "#ffffff", "--card-selected": "#edf2ff",
+    "--text": "#0f172a", "--text-muted": "#64748b", "--border": "#dbe2ee",
+    "--border-light": "#e8edf7", "--panel-bg": "#ffffff", "--input-bg": "#eef3fb",
   };
+
+  const contentWidth = 4200;
+  const contentHeight = 3400;
 
   return (
     <div style={{
-      ...vars, background: "var(--bg)", color: "var(--text)", minHeight: "100vh",
+      ...vars,
+      background: "var(--bg)",
+      color: "var(--text)",
+      minHeight: "100vh",
       fontFamily: "'Inter', -apple-system, sans-serif",
     }}>
       <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet" />
-      
-      {/* Header */}
+
       <div style={{
-        padding: "20px 24px 16px", borderBottom: "1px solid var(--border)",
-        display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12
+        padding: "14px 18px",
+        borderBottom: "1px solid var(--border)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 10,
       }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: -0.5 }}>
-            <span style={{ color: "#3b82f6" }}>GTFS</span> Guida Struttura Dati
+          <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>
+            GTFS Schema Explorer (stile diagramma)
           </h1>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--text-muted)" }}>
-            {Object.keys(TABLES).length} tabelle · schema relazionale interattivo completo
-          </p>
-        </div>
-        <button onClick={() => setDarkMode(!darkMode)} style={{
-          background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 8,
-          padding: "6px 14px", color: "var(--text)", cursor: "pointer", fontSize: 12
-        }}>
-          {darkMode ? "☀️ Light" : "🌙 Dark"}
-        </button>
-      </div>
-
-      {/* Filter bar */}
-      <div style={{ padding: "12px 24px", display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-        <input
-          type="text" placeholder="Cerca tabella o campo..."
-          value={search} onChange={e => setSearch(e.target.value)}
-          style={{
-            background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 8,
-            padding: "6px 12px", color: "var(--text)", fontSize: 12, width: 200, outline: "none"
-          }}
-        />
-        <button
-          onClick={() => setFilter("all")}
-          style={{
-            background: filter === "all" ? "#3b82f6" : "var(--input-bg)",
-            color: filter === "all" ? "#fff" : "var(--text-muted)",
-            border: "1px solid " + (filter === "all" ? "#3b82f6" : "var(--border)"),
-            borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 600
-          }}
-        >Tutte</button>
-        {GROUPS.map(g => (
-          <button key={g.id} onClick={() => setFilter(g.id)} style={{
-            background: filter === g.id ? g.color : "var(--input-bg)",
-            color: filter === g.id ? "#fff" : "var(--text-muted)",
-            border: `1px solid ${filter === g.id ? g.color : "var(--border)"}`,
-            borderRadius: 6, padding: "4px 10px", fontSize: 11, cursor: "pointer", fontWeight: 500
-          }}>
-            {g.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Main layout */}
-      <div style={{ display: "flex", gap: 0, height: "calc(100vh - 140px)" }}>
-        {/* Left: Table grid */}
-        <div style={{
-          flex: "0 0 340px", overflowY: "auto", padding: "8px 16px 24px",
-          borderRight: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 6
-        }}>
-          {filteredTables.map(([key, table]) => {
-            const g = getGroupForTable(key);
-            return (
-              <TableCard
-                key={key} tableKey={key} table={table}
-                isSelected={selected === key}
-                onClick={() => setSelected(key)}
-                groupColor={g?.color || "#64748b"}
-              />
-            );
-          })}
-          {filteredTables.length === 0 && (
-            <div style={{ textAlign: "center", padding: 40, color: "var(--text-muted)", fontSize: 13 }}>
-              Nessuna tabella trovata
-            </div>
-          )}
-        </div>
-
-        {/* Right: Detail panel */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px 40px" }}>
-          <div style={{
-            background: "var(--panel-bg)", border: "1px solid var(--border)", borderRadius: 10,
-            padding: "12px 14px", marginBottom: 14
-          }}>
-            <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Come leggere GTFS in 4 passi</div>
-            <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.6 }}>
-              1) agency definisce l'operatore. 2) routes descrive le linee. 3) trips definisce ogni corsa per giorno/servizio.
-              4) stop_times collega le corse alle fermate (stops) con orari e sequenza.
-            </div>
+          <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
+            Trascina le tabelle, usa zoom/pan e visualizza tutte le righe dei campi nelle card
           </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <input
+            type="text"
+            placeholder="Cerca tabella/campo"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={{
+              width: 220,
+              background: "var(--input-bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              color: "var(--text)",
+              fontSize: 12,
+              padding: "7px 10px",
+              outline: "none",
+            }}
+          />
+          <button onClick={() => setZoom((z) => Math.max(0.55, Number((z - 0.1).toFixed(2))))} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>-</button>
+          <span style={{ minWidth: 46, textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>{Math.round(zoom * 100)}%</span>
+          <button onClick={() => setZoom((z) => Math.min(1.4, Number((z + 0.1).toFixed(2))))} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>+</button>
+          <button onClick={() => { setPositions(buildInitialPositions()); setPan({ x: 0, y: 0 }); setZoom(0.95); }} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>Reset layout</button>
+          <button onClick={() => setDarkMode((d) => !d)} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>{darkMode ? "Light" : "Dark"}</button>
+        </div>
+      </div>
 
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", height: "calc(100vh - 92px)" }}>
+        <div
+          onPointerDown={handlePointerDownCanvas}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endInteraction}
+          onPointerLeave={endInteraction}
+          style={{
+            position: "relative",
+            overflow: "auto",
+            borderRight: "1px solid var(--border)",
+            backgroundImage: "radial-gradient(circle at 1px 1px, rgba(120,120,140,0.16) 1px, transparent 0)",
+            backgroundSize: "20px 20px",
+          }}
+        >
           <div style={{
-            background: "var(--panel-bg)", border: "1px solid var(--border)", borderRadius: 10,
-            padding: "12px 14px", marginBottom: 16
+            width: contentWidth,
+            height: contentHeight,
+            position: "relative",
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: "0 0",
           }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700 }}>Schema Relazioni (tutte le FK)</div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  {allRelations.length} connessioni tabella-tabella · click su un nodo per aprire il dettaglio
+            <svg width={contentWidth} height={contentHeight} style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+              {allRelations.map((rel, idx) => {
+                const from = positions[rel.from];
+                const to = positions[rel.to];
+                if (!from || !to) return null;
+                const fromH = getCardHeight(rel.from);
+                const toH = getCardHeight(rel.to);
+                const sx = from.x + CARD_WIDTH;
+                const sy = from.y + Math.min(fromH - 18, CARD_HEADER + TABLES[rel.from].fields.findIndex((f) => f.name === rel.field) * FIELD_ROW + 10);
+                const tx = to.x;
+                const ty = to.y + Math.max(14, toH / 2);
+                const c = Math.max(44, Math.abs(tx - sx) * 0.45);
+                const selectedEdge = rel.from === selected || rel.to === selected;
+                const dim = search && !matchesSearch.has(rel.from) && !matchesSearch.has(rel.to);
+                return (
+                  <path
+                    key={`${rel.from}-${rel.to}-${idx}`}
+                    d={`M ${sx} ${sy} C ${sx + c} ${sy}, ${tx - c} ${ty}, ${tx} ${ty}`}
+                    fill="none"
+                    stroke={selectedEdge ? "#38bdf8" : "#64748b88"}
+                    strokeWidth={selectedEdge ? 2 : 1.2}
+                    opacity={dim ? 0.2 : selectedEdge ? 1 : 0.7}
+                  />
+                );
+              })}
+            </svg>
+
+            {Object.entries(TABLES).map(([tableKey, table]) => {
+              const p = positions[tableKey];
+              if (!p) return null;
+              const g = getGroupForTable(tableKey);
+              const color = g?.color || "#64748b";
+              const selectedCard = tableKey === selected;
+              const dim = search && !matchesSearch.has(tableKey);
+              return (
+                <div
+                  key={tableKey}
+                  onPointerDown={(e) => handlePointerDownCard(e, tableKey)}
+                  style={{
+                    position: "absolute",
+                    left: p.x,
+                    top: p.y,
+                    width: CARD_WIDTH,
+                    borderRadius: 10,
+                    border: `1.5px solid ${selectedCard ? color : "var(--border)"}`,
+                    background: selectedCard ? "var(--card-selected)" : "var(--card-bg)",
+                    boxShadow: selectedCard ? `0 0 0 3px ${color}22, 0 12px 24px rgba(0,0,0,0.16)` : "0 4px 14px rgba(0,0,0,0.08)",
+                    opacity: dim ? 0.25 : 1,
+                    cursor: "grab",
+                    userSelect: "none",
+                  }}
+                >
+                  <div style={{
+                    height: CARD_HEADER,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: 8,
+                    padding: "0 10px",
+                    borderBottom: "1px solid var(--border)",
+                    background: `${color}16`,
+                  }}>
+                    <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11.5, fontWeight: 700, color: "var(--text)" }}>
+                      {table.label}
+                    </span>
+                    <span style={{ fontSize: 10, color, fontWeight: 700 }}>
+                      {table.required ? "REQ" : "OPT"}
+                    </span>
+                  </div>
+                  <div>
+                    {table.fields.map((field, i) => (
+                      <div key={i} style={{
+                        minHeight: FIELD_ROW,
+                        padding: "1px 10px",
+                        borderBottom: "1px solid var(--border-light)",
+                        display: "grid",
+                        gridTemplateColumns: "1fr auto",
+                        alignItems: "center",
+                        gap: 8,
+                        fontSize: 11,
+                      }}>
+                        <span style={{
+                          fontFamily: "'JetBrains Mono', monospace",
+                          color: field.fk ? "#60a5fa" : "var(--text)",
+                          fontWeight: field.pk ? 700 : 500,
+                        }}>
+                          {field.pk ? "PK " : ""}{field.name}
+                        </span>
+                        <TypeBadge type={field.type} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              </div>
-              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                <button
-                  onClick={() => setShowOnlyConnected(v => !v)}
-                  style={{
-                    background: showOnlyConnected ? "#0ea5e9" : "var(--input-bg)",
-                    color: showOnlyConnected ? "#fff" : "var(--text-muted)",
-                    border: `1px solid ${showOnlyConnected ? "#0ea5e9" : "var(--border)"}`,
-                    borderRadius: 6,
-                    padding: "4px 8px",
-                    fontSize: 11,
-                    cursor: "pointer",
-                    fontWeight: 600,
-                  }}
-                >
-                  Solo collegate
-                </button>
-                <button
-                  onClick={() => setGraphZoom(z => Math.max(0.75, Number((z - 0.1).toFixed(2))))}
-                  style={{
-                    background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6,
-                    padding: "4px 8px", fontSize: 11, color: "var(--text)", cursor: "pointer"
-                  }}
-                >
-                  -
-                </button>
-                <span style={{ fontSize: 11, minWidth: 40, textAlign: "center", color: "var(--text-muted)" }}>
-                  {Math.round(graphZoom * 100)}%
-                </span>
-                <button
-                  onClick={() => setGraphZoom(z => Math.min(1.35, Number((z + 0.1).toFixed(2))))}
-                  style={{
-                    background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6,
-                    padding: "4px 8px", fontSize: 11, color: "var(--text)", cursor: "pointer"
-                  }}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            <RelationshipGraph
-              tables={TABLES}
-              groups={GROUPS}
-              relations={allRelations}
-              selected={selected}
-              onSelect={setSelected}
-              showOnlyConnected={showOnlyConnected}
-              zoom={graphZoom}
-            />
+              );
+            })}
           </div>
+        </div>
 
+        <div style={{ overflowY: "auto", padding: 14, background: "var(--panel-bg)" }}>
           {selectedTable && (
             <>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-                <span style={{
-                  width: 12, height: 12, borderRadius: "50%",
-                  background: selectedGroup?.color, boxShadow: `0 0 10px ${selectedGroup?.color}44`
-                }} />
-                <h2 style={{ margin: 0, fontFamily: "'JetBrains Mono', monospace", fontSize: 20, fontWeight: 700 }}>
-                  {selectedTable.label}
-                </h2>
-                {selectedTable.required && (
-                  <span style={{
-                    fontSize: 10, background: `${selectedGroup?.color}22`, color: selectedGroup?.color,
-                    padding: "2px 8px", borderRadius: 4, fontWeight: 700
-                  }}>REQUIRED</span>
-                )}
+              <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 99, background: selectedGroup?.color || "#64748b" }} />
+                <h2 style={{ margin: 0, fontSize: 16, fontFamily: "'JetBrains Mono', monospace" }}>{selectedTable.label}</h2>
               </div>
-
-              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 8 }}>
-                <strong>Primary Key:</strong>{" "}
-                <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>
-                  {selectedTable.pk.length === 0 ? "(nessuna — singolo record)" : selectedTable.pk.join(" + ")}
-                </span>
+              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+                PK: {selectedTable.pk.length ? selectedTable.pk.join(" + ") : "(nessuna)"}
               </div>
-
-              {/* Relations summary */}
-              {(fkRelations.length > 0 || incomingRelations.length > 0) && (
-                <div style={{
-                  background: "var(--input-bg)", borderRadius: 8, padding: "10px 14px",
-                  marginBottom: 16, border: "1px solid var(--border)", fontSize: 12
-                }}>
-                  {fkRelations.length > 0 && (
-                    <div style={{ marginBottom: incomingRelations.length > 0 ? 6 : 0 }}>
-                      <span style={{ color: "#6366f1", fontWeight: 600 }}>Riferimenti in uscita:</span>{" "}
-                      {fkRelations.map((r, i) => (
-                        <span key={i}>
-                          <span
-                            style={{ fontFamily: "'JetBrains Mono', monospace", cursor: "pointer", textDecoration: "underline", textDecorationColor: "#6366f133" }}
-                            onClick={() => setSelected(r.to)}
-                          >{r.field} → {r.target}</span>
-                          {i < fkRelations.length - 1 ? ", " : ""}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {incomingRelations.length > 0 && (
-                    <div>
-                      <span style={{ color: "#10b981", fontWeight: 600 }}>Riferimenti in entrata:</span>{" "}
-                      {incomingRelations.map((r, i) => (
-                        <span key={i}>
-                          <span
-                            style={{ fontFamily: "'JetBrains Mono', monospace", cursor: "pointer", textDecoration: "underline", textDecorationColor: "#10b98133" }}
-                            onClick={() => setSelected(r.from)}
-                          >{TABLES[r.from]?.label}.{r.field}</span>
-                          {i < incomingRelations.length - 1 ? ", " : ""}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Fields */}
               <div style={{
-                background: "var(--card-bg)", borderRadius: 10, border: "1px solid var(--border)",
-                padding: "4px 16px"
+                border: "1px solid var(--border)",
+                background: "var(--card-bg)",
+                borderRadius: 10,
+                padding: "4px 12px",
               }}>
-                {selectedTable.fields.map((f, i) => (
-                  <FieldDetail key={i} field={f} />
+                {selectedTable.fields.map((field, idx) => (
+                  <FieldDetail key={idx} field={field} />
                 ))}
               </div>
             </>
