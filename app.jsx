@@ -741,6 +741,67 @@ export default function GTFSSchema() {
     return positions;
   };
 
+  // Layout automatico: calcola i livelli di ogni tabella in base alle FK (DAG topologico)
+  const buildAutoLayout = () => {
+    const allKeys = Object.keys(TABLES);
+    // Costruisce adiacenze
+    const outEdges = {};
+    const inDeg = {};
+    allKeys.forEach((k) => { outEdges[k] = []; inDeg[k] = 0; });
+    allKeys.forEach((k) => {
+      TABLES[k].fields.forEach((f) => {
+        if (!f.fk) return;
+        const to = f.fk.split(".")[0];
+        if (!TABLES[to] || to === k) return;
+        if (!outEdges[k].includes(to)) {
+          outEdges[k].push(to);
+          inDeg[to] = (inDeg[to] || 0) + 1;
+        }
+      });
+    });
+    // Topoligical sort (Kahn) per assegnare livello
+    const level = {};
+    const queue = allKeys.filter((k) => inDeg[k] === 0);
+    queue.forEach((k) => { level[k] = 0; });
+    let head = 0;
+    while (head < queue.length) {
+      const cur = queue[head++];
+      outEdges[cur].forEach((nb) => {
+        if (level[nb] === undefined || level[nb] <= level[cur]) {
+          level[nb] = level[cur] + 1;
+        }
+        inDeg[nb]--;
+        if (inDeg[nb] === 0) queue.push(nb);
+      });
+    }
+    // Nodi non raggiunti (cicli)
+    allKeys.forEach((k) => { if (level[k] === undefined) level[k] = 0; });
+
+    // Raggruppa per livello
+    const byLevel = {};
+    allKeys.forEach((k) => {
+      const l = level[k];
+      if (!byLevel[l]) byLevel[l] = [];
+      byLevel[l].push(k);
+    });
+
+    const colGap = 90;
+    const rowGap = 32;
+    const startX = 50;
+    const startY = 50;
+    const positions = {};
+
+    Object.keys(byLevel).sort((a, b) => a - b).forEach((lv) => {
+      const x = startX + Number(lv) * (CARD_WIDTH + colGap);
+      let y = startY;
+      byLevel[lv].forEach((k) => {
+        positions[k] = { x, y };
+        y += getCardHeight(k) + rowGap;
+      });
+    });
+    return positions;
+  };
+
   const [selected, setSelected] = useState("agency");
   const [selectedField, setSelectedField] = useState(null);
   const [search, setSearch] = useState("");
@@ -864,10 +925,10 @@ export default function GTFSSchema() {
       }}>
         <div>
           <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700 }}>
-            GTFS Schema Explorer (stile diagramma)
+            Schema GTFS
           </h1>
           <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-            Trascina le tabelle, usa zoom/pan e visualizza tutte le righe dei campi nelle card
+            Trascina le tabelle · zoom/pan · click campo per evidenziare relazioni
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -890,7 +951,12 @@ export default function GTFSSchema() {
           <button onClick={() => setZoom((z) => Math.max(0.55, Number((z - 0.1).toFixed(2))))} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>-</button>
           <span style={{ minWidth: 46, textAlign: "center", fontSize: 12, color: "var(--text-muted)" }}>{Math.round(zoom * 100)}%</span>
           <button onClick={() => setZoom((z) => Math.min(1.4, Number((z + 0.1).toFixed(2))))} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>+</button>
-          <button onClick={() => { setPositions(buildInitialPositions()); setPan({ x: 0, y: 0 }); setZoom(0.95); }} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>Reset layout</button>
+          <button
+            onClick={() => { setPositions(buildAutoLayout()); setPan({ x: 0, y: 0 }); setZoom(0.75); }}
+            style={{ background: "#2563eb", border: "1px solid #2563eb", color: "#fff", borderRadius: 8, cursor: "pointer", padding: "7px 12px", fontSize: 12, fontWeight: 600 }}
+            title="Organizza automaticamente le tabelle per livello di dipendenza FK"
+          >Auto</button>
+          <button onClick={() => { setPositions(buildInitialPositions()); setPan({ x: 0, y: 0 }); setZoom(0.95); }} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>Reset</button>
           <button onClick={() => setDarkMode((d) => !d)} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 8, cursor: "pointer", padding: "7px 10px", fontSize: 12 }}>{darkMode ? "Light" : "Dark"}</button>
         </div>
       </div>
@@ -1039,7 +1105,42 @@ export default function GTFSSchema() {
           </div>
         </div>
 
-        <div style={{ overflowY: "auto", padding: 14, background: "var(--panel-bg)" }}>
+        <div style={{ overflowY: "auto", padding: 14, background: "var(--panel-bg)", display: "flex", flexDirection: "column", gap: 14 }}>
+          {/* Legenda gruppi */}
+          <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "var(--text)" }}>Legenda colori</div>
+            {GROUPS.map((g) => (
+              <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 3, background: g.color, flexShrink: 0 }} />
+                <div>
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text)" }}>{g.label}</span>
+                  <div style={{ fontSize: 10.5, color: "var(--text-muted)" }}>
+                    {g.id === "core" && "Tabelle obbligatorie: definiscono linee, corse, fermate e orari"}
+                    {g.id === "geo" && "Percorso geografico (shape) e frequenze tra corse"}
+                    {g.id === "fare_v1" && "Tariffe legacy: attributi e regole (GTFS v1)"}
+                    {g.id === "fare_v2" && "Tariffe moderne: prodotti, media, aree, reti (GTFS v2)"}
+                    {g.id === "access" && "Stazione: percorsi interni, livelli e accessibilità"}
+                    {g.id === "flex" && "Servizi a domanda: prenotazioni e gruppi di fermate"}
+                    {g.id === "meta" && "Metadati: informazioni sul feed, traduzioni e attribuzioni"}
+                  </div>
+                </div>
+              </div>
+            ))}
+            <div style={{ borderTop: "1px solid var(--border)", marginTop: 8, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--text)", fontSize: 10 }}>REQ</span> tabella obbligatoria nel feed
+              </div>
+              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--text-muted)", fontSize: 10 }}>OPT</span> tabella opzionale
+              </div>
+              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, color: "#60a5fa", fontSize: 10 }}>campo blu</span> chiave esterna (FK)
+              </div>
+              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--text)", fontSize: 10 }}>PK campo</span> chiave primaria
+              </div>
+            </div>
+          </div>
           {selectedTable && (
             <>
               <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
