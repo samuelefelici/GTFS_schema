@@ -685,6 +685,28 @@ function RelationshipGraph({
   );
 }
 
+function buildOrthoPath(sx, sy, tx, ty) {
+  const r = 10;
+  if (Math.abs(ty - sy) < 4) return `M ${sx} ${sy} H ${tx}`;
+  const mid = Math.max(sx + r * 3, tx > sx ? (sx + tx) / 2 : sx + 50);
+  const vs = ty > sy ? 1 : -1;
+  const hs = tx > mid ? 1 : -1;
+  const sweep1 = vs > 0 ? 1 : 0;
+  let sweep2, ex;
+  if (vs > 0 && hs > 0) { sweep2 = 0; ex = mid + r; }
+  else if (vs > 0 && hs < 0) { sweep2 = 1; ex = mid - r; }
+  else if (vs < 0 && hs > 0) { sweep2 = 1; ex = mid + r; }
+  else { sweep2 = 0; ex = mid - r; }
+  return [
+    `M ${sx} ${sy}`,
+    `H ${mid - r}`,
+    `A ${r} ${r} 0 0 ${sweep1} ${mid} ${sy + vs * r}`,
+    `V ${ty - vs * r}`,
+    `A ${r} ${r} 0 0 ${sweep2} ${ex} ${ty}`,
+    `H ${tx}`,
+  ].join(" ");
+}
+
 export default function GTFSSchema() {
   const CARD_WIDTH = 320;
   const CARD_HEADER = 38;
@@ -720,6 +742,7 @@ export default function GTFSSchema() {
   };
 
   const [selected, setSelected] = useState("agency");
+  const [selectedField, setSelectedField] = useState(null);
   const [search, setSearch] = useState("");
   const [darkMode, setDarkMode] = useState(true);
   const [zoom, setZoom] = useState(0.95);
@@ -770,6 +793,7 @@ export default function GTFSSchema() {
   const handlePointerDownCard = (e, tableKey) => {
     e.stopPropagation();
     setSelected(tableKey);
+    setSelectedField(null);
     interactionRef.current = {
       type: "drag",
       tableKey,
@@ -899,21 +923,27 @@ export default function GTFSSchema() {
                 if (!from || !to) return null;
                 const fromH = getCardHeight(rel.from);
                 const toH = getCardHeight(rel.to);
+                const fieldIdx = TABLES[rel.from].fields.findIndex((f) => f.name === rel.field);
                 const sx = from.x + CARD_WIDTH;
-                const sy = from.y + Math.min(fromH - 18, CARD_HEADER + TABLES[rel.from].fields.findIndex((f) => f.name === rel.field) * FIELD_ROW + 10);
+                const sy = from.y + CARD_HEADER + fieldIdx * FIELD_ROW + FIELD_ROW / 2;
                 const tx = to.x;
-                const ty = to.y + Math.max(14, toH / 2);
-                const c = Math.max(44, Math.abs(tx - sx) * 0.45);
-                const selectedEdge = rel.from === selected || rel.to === selected;
+                const ty = to.y + CARD_HEADER + toH * 0.35;
+
+                const lit = selectedField
+                  ? (rel.from === selectedField.table && rel.field === selectedField.field) ||
+                    (rel.to === selectedField.table && rel.target === `${selectedField.table}.${selectedField.field}`)
+                  : rel.from === selected || rel.to === selected;
+
                 const dim = search && !matchesSearch.has(rel.from) && !matchesSearch.has(rel.to);
                 return (
                   <path
                     key={`${rel.from}-${rel.to}-${idx}`}
-                    d={`M ${sx} ${sy} C ${sx + c} ${sy}, ${tx - c} ${ty}, ${tx} ${ty}`}
+                    d={buildOrthoPath(sx, sy, tx, ty)}
                     fill="none"
-                    stroke={selectedEdge ? "#38bdf8" : "#64748b88"}
-                    strokeWidth={selectedEdge ? 2 : 1.2}
-                    opacity={dim ? 0.2 : selectedEdge ? 1 : 0.7}
+                    stroke={lit ? "#38bdf8" : "#475569"}
+                    strokeWidth={lit ? 2.2 : 1}
+                    strokeDasharray={lit ? "7 4" : "5 4"}
+                    opacity={dim ? 0.12 : lit ? 1 : 0.35}
                   />
                 );
               })}
@@ -962,27 +992,46 @@ export default function GTFSSchema() {
                     </span>
                   </div>
                   <div>
-                    {table.fields.map((field, i) => (
-                      <div key={i} style={{
-                        minHeight: FIELD_ROW,
-                        padding: "1px 10px",
-                        borderBottom: "1px solid var(--border-light)",
-                        display: "grid",
-                        gridTemplateColumns: "1fr auto",
-                        alignItems: "center",
-                        gap: 8,
-                        fontSize: 11,
-                      }}>
-                        <span style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          color: field.fk ? "#60a5fa" : "var(--text)",
-                          fontWeight: field.pk ? 700 : 500,
-                        }}>
-                          {field.pk ? "PK " : ""}{field.name}
-                        </span>
-                        <TypeBadge type={field.type} />
-                      </div>
-                    ))}
+                    {table.fields.map((field, i) => {
+                      const isFieldLit =
+                        selectedField &&
+                        selectedField.table === tableKey &&
+                        selectedField.field === field.name;
+                      return (
+                        <div
+                          key={i}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelected(tableKey);
+                            setSelectedField(
+                              isFieldLit ? null : { table: tableKey, field: field.name }
+                            );
+                          }}
+                          style={{
+                            minHeight: FIELD_ROW,
+                            padding: "1px 10px",
+                            borderBottom: "1px solid var(--border-light)",
+                            display: "grid",
+                            gridTemplateColumns: "1fr auto",
+                            alignItems: "center",
+                            gap: 8,
+                            fontSize: 11,
+                            cursor: "pointer",
+                            background: isFieldLit ? "rgba(56,189,248,0.12)" : "transparent",
+                            borderLeft: isFieldLit ? "2px solid #38bdf8" : "2px solid transparent",
+                          }}
+                        >
+                          <span style={{
+                            fontFamily: "'JetBrains Mono', monospace",
+                            color: isFieldLit ? "#38bdf8" : field.fk ? "#60a5fa" : "var(--text)",
+                            fontWeight: field.pk ? 700 : 500,
+                          }}>
+                            {field.pk ? "PK " : ""}{field.name}
+                          </span>
+                          <TypeBadge type={field.type} />
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
