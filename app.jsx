@@ -440,6 +440,40 @@ function getGroupForTable(tableKey) {
   return GROUPS.find(g => g.tables.includes(tableKey));
 }
 
+const TABLE_GUIDES = {
+  agency: "Il punto di partenza di ogni feed GTFS. Rappresenta l'ente che gestisce il servizio di trasporto. Se il dataset include più operatori (es. un consorzio), ogni riga identifica un'agenzia distinta: in quel caso agency_id diventa obbligatorio perché le linee in routes devono dichiarare a chi appartengono. I campi minimi richiesti sono agency_name, agency_url e agency_timezone (usa i nomi IANA, es. Europe/Rome).",
+  stops: "La tabella più articolata del nucleo GTFS. Tramite location_type non descrive solo le fermate fisiche (tipo 0), ma anche stazioni/hub (1), ingressi (2), nodi di trasferimento interni (3) e aree di imbarco sui binari (4). La relazione padre-figlio con parent_station costruisce la gerarchia di una stazione complessa con più ingressi. Le coordinate WGS84 (stop_lat/stop_lon) sono obbligatorie per le fermate fisiche; wheelchair_boarding è essenziale per soddisfare i requisiti di accessibilità.",
+  routes: "Definisce le linee di trasporto. route_type è il campo chiave: usa i codici GTFS standard (0=Tram, 1=Metro, 2=Treno, 3=Bus, 4=Traghetto…) o i codici estesi per servizi speciali. I colori route_color e route_text_color sono usati dalle app di navigazione per la visualizzazione sulla mappa. Se il feed ha più agenzie, compila sempre agency_id. Con GTFS Fare v2, usa network_id per collegare la linea alla rete tariffaria.",
+  trips: "Il cuore operativo di GTFS: ogni riga è una singola esecuzione di una linea in un dato giorno. Il link con service_id (via calendar o calendar_dates) stabilisce quando la corsa è attiva. trip_headsign è il testo del cartello sul veicolo (es. 'Milano Centrale'). block_id modella veicoli che continuano su più corse consecutive senza tornare in deposito. Abbina sempre shape_id per tracciare il percorso geografico sulla mappa.",
+  stop_times: "La tabella più grande di qualsiasi feed GTFS reale: contiene gli orari di ogni fermata per ogni corsa. Gli orari possono superare le 24:00 per i servizi notturni (es. 25:30:00). timepoint=1 indica fermate con orario garantito (capolinea, nodi principali), timepoint=0 orari approssimati. shape_dist_traveled abilita l'interpolazione precisa della posizione del veicolo nei sistemi real-time. Usa pickup_type e drop_off_type per gestire fermate a salita o discesa esclusa.",
+  calendar: "Definisce il calendario settimanale di un servizio con un intervallo di date valido. Ogni flag (0/1) indica se il servizio è attivo in quel giorno. È il modo più semplice per descrivere servizi regolari feriali o festivi. Per eccezioni (festività, servizi straordinari) integra con calendar_dates, che ha sempre la precedenza. Non è obbligatorio se usi esclusivamente calendar_dates per tutte le date.",
+  calendar_dates: "Gestisce le eccezioni al calendario: exception_type=1 aggiunge un servizio in una data specifica, exception_type=2 lo rimuove (es. festività). Può essere usato da solo senza calendar, elencando esplicitamente ogni data attiva — utile per feed stagionali o a bassa frequenza. Quando coesiste con calendar, le righe in questo file sovrascrivono sempre i flag settimanali per quella data.",
+  shapes: "Descrive la geometria geografica del percorso del veicolo come sequenza ordinata di punti lat/lon. Si collega a trips tramite shape_id. shape_dist_traveled (distanza cumulativa dall'inizio dello shape) è opzionale ma fondamentale per i sistemi GTFS-Realtime: consente di interpolare con precisione la posizione del veicolo lungo la rotta. Verifica sempre che i punti dello shape seguano fedelmente la strada reale percorsa dal mezzo.",
+  frequencies: "Alternativa a stop_times per servizi a intervallo regolare (es. metro ogni 3 minuti). Invece di elencare ogni singola corsa, si definisce una finestra oraria con headway_secs (intervallo in secondi). Con exact_times=0 gli orari sono approssimati; con exact_times=1 il sistema calcola orari precisi moltiplicando l'headway dalla start_time. Importante: non usare lo stesso trip_id sia in stop_times sia in frequencies.",
+  transfers: "Definisce regole esplicite di interscambio tra fermate, linee o corse. transfer_type=1 garantisce un interscambio temporizzato (il secondo mezzo aspetta il primo). I tipi 4 (in-seat) e 5 (re-board) sono fondamentali per i treni che cambiano numero ma mantengono i passeggeri a bordo. Senza questa tabella, le app di navigazione usano criteri di default (tipicamente 2-5 minuti) per valutare la fattibilità degli interscambi.",
+  fare_attributes: "Il sistema tariffario legacy di GTFS v1: definisce classi tariffarie con prezzo fisso, valuta e regole sui trasferimenti inclusi. Semplice da implementare ma limitato: non gestisce abbonamenti, sconti per categoria, media di pagamento diversi o fasce orarie. Per scenari complessi considera GTFS Fare v2. transfer_duration specifica per quanti secondi il biglietto rimane valido per i trasferimenti.",
+  fare_rules: "Associa le classi tariffarie di fare_attributes a linee, zone di origine, destinazione e transito. La logica è additiva: se una corsa soddisfa più regole, viene applicata la tariffa più bassa tra quelle corrispondenti. origin_id, destination_id e contains_id fanno riferimento alle zone_id delle fermate in stops. Anche un solo campo è sufficiente per una regola; i campi vuoti fungono da wildcard.",
+  fare_media: "Parte di GTFS Fare v2. Descrive il supporto fisico o digitale usato per pagare il biglietto: contanti (0), biglietto cartaceo (1), carta trasporti RFID (2), carta bancaria contactless cEMV (3), app mobile (4). Lo stesso prodotto tariffario può essere disponibile su più media, con prezzi potenzialmente diversi (es. biglietto via app più economico del cartaceo).",
+  fare_products: "I prodotti tariffari acquistabili dagli utenti: corsa singola, giornaliero, settimanale, abbonamento mensile, ecc. Il campo amount può essere 0 per trasferimenti gratuiti o negativo per sconti. La chiave primaria è la combinazione fare_product_id + fare_media_id, quindi lo stesso prodotto può avere prezzi diversi a seconda del media. Si collega a rider_categories per tariffe dedicate a fasce di utenza specifiche.",
+  rider_categories: "Categorie di passeggeri per le tariffe differenziate: adulto, under-18, anziano, disabile, studente, ecc. Usata insieme a fare_products per gestire sconti e agevolazioni. is_default_fare_category=1 indica la categoria standard (tipicamente adulto), usata dal sistema quando non è specificata altra preferenza. eligibility_url può puntare ai criteri ufficiali di idoneità per ciascuna categoria.",
+  fare_leg_rules: "Il motore principale del sistema tariffario v2. Una 'tratta tariffaria' (fare leg) è un segmento continuo di viaggio su una rete. Questa tabella stabilisce quale fare_product è valido in base alla rete (network_id), alle aree di partenza/arrivo e alla fascia oraria (timeframe_group_id). rule_priority risolve i conflitti quando più regole sono applicabili contemporaneamente: vince quella con il valore più alto.",
+  fare_transfer_rules: "Estende fare_leg_rules per gestire i costi di trasferimento tra tratte diverse. Definisce se il passaggio da una rete all'altra ha un costo aggiuntivo, se c'è un tempo limite e quanti trasferimenti consecutivi sono coperti dallo stesso prodotto. fare_transfer_type controlla la modalità di calcolo: 0=trasferimento gratuito se già pagato, 1=sconto sul secondo biglietto, 2=costo pieno per ogni tratta.",
+  areas: "Le aree tariffarie di GTFS Fare v2, equivalenti concettuali delle zone_id di v1 ma con struttura separata e più flessibile. Un'area raggruppa un insieme di fermate sotto un identificativo comune. Viene usata in fare_leg_rules come from_area_id e to_area_id per determinare la tariffa in base al punto di salita e discesa del passeggero.",
+  stop_areas: "Tabella di relazione molti-a-molti tra fermate e aree tariffarie. Una fermata può appartenere a più aree contemporaneamente (es. una stazione di interscambio in zona A e zona B). Questa flessibilità è uno dei principali miglioramenti di Fare v2 rispetto alle zone_id di v1, dove ogni fermata poteva avere una sola zona.",
+  networks: "Raggruppa le linee in reti tariffarie (es. 'Rete urbana Milano', 'Rete regionale Lombardia'). Una rete può coprire un'intera città, un bacino o un consorzio di operatori. Le linee vengono associate alle reti tramite route_networks. In alternativa, se ogni linea appartiene a una sola rete, si può usare direttamente network_id nel campo di routes.",
+  route_networks: "Tabella di relazione tra linee e reti tariffarie (relazione N:M). Necessaria quando una linea appartiene a più reti oppure quando si preferisce non inserire network_id direttamente in routes. Usata da fare_leg_rules per determinare la rete di appartenenza di una tratta e applicare la tariffa corretta.",
+  timeframes: "Fasce orarie per tariffe dinamiche (ore di punta, ore di morbida, notte, weekend…). Si collega a un service_id per gestire variazioni anche in base al giorno della settimana. start_time/end_time usano la stessa sintassi HH:MM:SS di stop_times, con possibilità di superare le 24:00. Viene referenziato in fare_leg_rules tramite from_timeframe_group_id e to_timeframe_group_id.",
+  pathways: "Descrive il percorso pedonale all'interno di una stazione: corridoi, scale, scale mobili, ascensori e cancelli. Ogni pathway è un collegamento direzionale tra due punti interni (nodi di tipo 3/4 in stops). traversal_time (in secondi) è fondamentale per il calcolo del tempo di interscambio. max_slope e min_width servono per filtrare percorsi accessibili a persone con mobilità ridotta. Usa is_bidirectional=1 dove possibile per dimezzare le righe.",
+  levels: "Livelli verticali di una stazione: piano terra (0), mezzanino (-0.5), piano binari (-1), interrato (-2), ecc. Usato insieme a pathways per la navigazione indoor multi-piano. level_index è un valore numerico arbitrario ma deve essere coerente all'interno della stessa stazione. level_name deve corrispondere alle indicazioni reali della segnaletica (es. 'Mezzanino', 'Banchina ovest').",
+  feed_info: "Metadati sul feed GTFS stesso: chi pubblica i dati, in quale lingua, da quando a quando sono validi. feed_publisher_name è l'ente che gestisce la pubblicazione (non necessariamente l'operatore di trasporto). feed_version permette ai sistemi downstream di rilevare aggiornamenti. Questa tabella è obbligatoria se il feed contiene translations. feed_start_date e feed_end_date devono allinearsi con il periodo coperto da calendar.",
+  translations: "Localizza qualsiasi campo testuale del feed in più lingue IETF BCP 47. Il meccanismo funziona via record_id (riferimento diretto all'ID del record) o via field_value (match sul valore del campo, utile quando gli ID non sono stabili). Usato principalmente per stop_name e route_long_name in paesi con più lingue ufficiali. La tabella feed_info deve essere presente per poter usare translations.",
+  attributions: "Attribuisce il merito di produzione, operazione o gestione dei dati a organizzazioni specifiche, con granularità fino alla singola corsa, linea o agenzia. I ruoli is_producer, is_operator e is_authority (1=sì, 0=no) possono essere cumulativi. Fondamentale per i feed open data dove diversi enti contribuiscono a parti diverse del dataset.",
+  location_groups: "Parte di GTFS Flex per i servizi a domanda (demand-responsive transport). Un gruppo di posizioni raccoglie più fermate sotto un identificativo comune: il passeggero può essere prelevato o lasciato in qualsiasi punto del gruppo. Usato in stop_times al posto dei normali stop_id per modellare servizi di tipo dial-a-ride o deviated fixed-route.",
+  location_group_stops: "Tabella di relazione molti-a-molti tra gruppi di posizioni e fermate fisiche. Ogni fermata nel gruppo condivide le regole di prenotazione definite nel trip che referenzia quel location_group. Usata insieme a booking_rules per configurare il flusso di prenotazione del servizio a richiesta.",
+  booking_rules: "Cuore di GTFS Flex: definisce le regole per prenotare i servizi a domanda. booking_type indica se si può prenotare in tempo reale (0), entro fine giornata (1) o con almeno un giorno di preavviso (2). prior_notice_duration_min/max specificano il preavviso minimo e massimo in minuti. I messaggi (message, pickup_message, drop_off_message) vengono mostrati all'utente nell'app durante la prenotazione.",
+  fare_leg_join_rules: "Regola speciale di GTFS Fare v2 per decidere quando trattare due tratte consecutive come una singola tratta ai fini tariffari. Utile per interscambi tra reti diverse in stazioni condivise: se la combinazione from_network_id + to_network_id + fermate di connessione corrisponde, le tratte vengono 'unite' e tariffate come un unico segmento, riducendo il costo apparente dell'interscambio.",
+};
+
 function TypeBadge({ type }) {
   const isFK = type.startsWith("FK");
   const isPK = false;
@@ -961,7 +995,30 @@ export default function GTFSSchema() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", height: "calc(100vh - 92px)" }}>
+      {/* ── Barra legenda ── */}
+      <div style={{
+        padding: "7px 18px",
+        borderBottom: "1px solid var(--border)",
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        flexWrap: "wrap",
+        background: "var(--panel-bg)",
+      }}>
+        {GROUPS.map((g) => (
+          <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 3, background: g.color, flexShrink: 0 }} />
+            <span style={{ fontSize: 11.5, color: "var(--text-muted)", fontWeight: 500 }}>{g.label}</span>
+          </div>
+        ))}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 14, fontSize: 11, color: "var(--text-muted)", flexWrap: "wrap" }}>
+          <span><span style={{ color: "#60a5fa", fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 }}>campo blu</span> = FK</span>
+          <span><span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--text)" }}>PK</span> = chiave primaria</span>
+          <span><span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700 }}>REQ</span> / <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "var(--text-muted)" }}>OPT</span> = obbligatorio / opzionale</span>
+        </span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", height: "calc(100vh - 130px)" }}>
         <div
           onPointerDown={handlePointerDownCanvas}
           onPointerMove={handlePointerMove}
@@ -1106,50 +1163,37 @@ export default function GTFSSchema() {
         </div>
 
         <div style={{ overflowY: "auto", padding: 14, background: "var(--panel-bg)", display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* Legenda gruppi */}
-          <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, color: "var(--text)" }}>Legenda colori</div>
-            {GROUPS.map((g) => (
-              <div key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                <span style={{ width: 12, height: 12, borderRadius: 3, background: g.color, flexShrink: 0 }} />
-                <div>
-                  <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text)" }}>{g.label}</span>
-                  <div style={{ fontSize: 10.5, color: "var(--text-muted)" }}>
-                    {g.id === "core" && "Tabelle obbligatorie: definiscono linee, corse, fermate e orari"}
-                    {g.id === "geo" && "Percorso geografico (shape) e frequenze tra corse"}
-                    {g.id === "fare_v1" && "Tariffe legacy: attributi e regole (GTFS v1)"}
-                    {g.id === "fare_v2" && "Tariffe moderne: prodotti, media, aree, reti (GTFS v2)"}
-                    {g.id === "access" && "Stazione: percorsi interni, livelli e accessibilità"}
-                    {g.id === "flex" && "Servizi a domanda: prenotazioni e gruppi di fermate"}
-                    {g.id === "meta" && "Metadati: informazioni sul feed, traduzioni e attribuzioni"}
-                  </div>
-                </div>
-              </div>
-            ))}
-            <div style={{ borderTop: "1px solid var(--border)", marginTop: 8, paddingTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--text)", fontSize: 10 }}>REQ</span> tabella obbligatoria nel feed
-              </div>
-              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--text-muted)", fontSize: 10 }}>OPT</span> tabella opzionale
-              </div>
-              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, color: "#60a5fa", fontSize: 10 }}>campo blu</span> chiave esterna (FK)
-              </div>
-              <div style={{ fontSize: 10.5, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: "var(--text)", fontSize: 10 }}>PK campo</span> chiave primaria
-              </div>
-            </div>
-          </div>
-          {selectedTable && (
+          {selectedTable ? (
             <>
-              <div style={{ marginBottom: 10, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ width: 10, height: 10, borderRadius: 99, background: selectedGroup?.color || "#64748b" }} />
-                <h2 style={{ margin: 0, fontSize: 16, fontFamily: "'JetBrains Mono', monospace" }}>{selectedTable.label}</h2>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 99, background: selectedGroup?.color || "#64748b", flexShrink: 0 }} />
+                <h2 style={{ margin: 0, fontSize: 15, fontFamily: "'JetBrains Mono', monospace", flex: 1 }}>{selectedTable.label}</h2>
+                <span style={{ fontSize: 10, color: selectedGroup?.color || "#64748b", fontWeight: 700, background: `${selectedGroup?.color || "#64748b"}1a`, padding: "2px 7px", borderRadius: 5 }}>
+                  {selectedTable.required ? "REQUIRED" : "OPTIONAL"}
+                </span>
               </div>
-              <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
-                PK: {selectedTable.pk.length ? selectedTable.pk.join(" + ") : "(nessuna)"}
+
+              {TABLE_GUIDES[selected] && (
+                <div style={{
+                  background: darkMode ? "rgba(37,99,235,0.09)" : "rgba(37,99,235,0.05)",
+                  border: "1px solid rgba(37,99,235,0.22)",
+                  borderRadius: 10,
+                  padding: "12px 14px",
+                }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, marginBottom: 7, color: "#2563eb" }}>
+                    Guida alla tabella
+                  </div>
+                  <p style={{ fontSize: 12.5, lineHeight: 1.75, color: "var(--text-muted)", margin: 0 }}>
+                    {TABLE_GUIDES[selected]}
+                  </p>
+                </div>
+              )}
+
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                <strong style={{ color: "var(--text)" }}>Chiave primaria:</strong>{" "}
+                {selectedTable.pk.length ? selectedTable.pk.join(" + ") : "(nessuna)"}
               </div>
+
               <div style={{
                 border: "1px solid var(--border)",
                 background: "var(--card-bg)",
@@ -1161,6 +1205,10 @@ export default function GTFSSchema() {
                 ))}
               </div>
             </>
+          ) : (
+            <div style={{ color: "var(--text-muted)", fontSize: 12, textAlign: "center", marginTop: 60 }}>
+              Clicca una tabella per vedere la guida e i dettagli dei campi
+            </div>
           )}
         </div>
       </div>
